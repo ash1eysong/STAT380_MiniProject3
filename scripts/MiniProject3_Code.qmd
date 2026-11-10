@@ -412,11 +412,92 @@ dim(test_data)
 
 Make a lasso regression model for your response vs all predictors on the training data.
 
+```{r}
+#| label: lasso-model
+
+# Define LASSO model
+lasso_model <- linear_reg(
+  penalty = 0.1,
+  mixture = 1
+) |>
+  set_engine("glmnet")
+
+# Create recipe
+lasso_recipe <- recipe(log_pop ~ ., data = train_data) |>
+  update_role(geo, name, new_role = "id") |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors())
+
+# Create workflow
+lasso_workflow <- workflow() |>
+  add_model(lasso_model) |>
+  add_recipe(lasso_recipe)
+
+# Fit model using training data
+lasso_fit <- fit(lasso_workflow, data = train_data)
+
+lasso_fit
+```
+
 ### Which variables
 
 By looking at the slopes, which variables should be considered included in the model
 
+```{r}
+#| label: lasso-coefficients
+
+# Extract coefficients
+lasso_coefs <- coef(
+  extract_fit_engine(lasso_fit),
+  s = 0.1
+)
+
+# Display all coefficients
+as.matrix(lasso_coefs)
+
+# Identify variables with nonzero slopes
+included_vars <- rownames(lasso_coefs)[
+  as.vector(lasso_coefs != 0)
+]
+
+# Exclude intercept
+setdiff(included_vars, "(Intercept)")
+```
+
+Based on the LASSO regression coefficients, six predictors were retained in the model because their slopes were nonzero. These variables were inflation, life expectancy, logged people in poverty, logged murder deaths, logged energy use, and upper-middle-income level. The remaining predictors had coefficients of zero and were excluded from the model. LASSO therefore reduced the number of predictors by shrinking less influential coefficients to zero.
+
 ### Model evaluation-regression metrics on testing.
+
+```{r}
+#| label: lasso-testing-metrics
+
+# Get predictions on testing data
+lasso_test_predictions <- predict(
+  lasso_fit,
+  new_data = test_data
+) |>
+  pull(.pred)
+
+# Calculate MSE, RMSE, and MAE
+lasso_test_mse <- mean(
+  (test_data$log_pop - lasso_test_predictions)^2
+)
+
+lasso_test_rmse <- sqrt(lasso_test_mse)
+
+lasso_test_mae <- mean(
+  abs(test_data$log_pop - lasso_test_predictions)
+)
+
+# Display results
+tibble(
+  MSE = lasso_test_mse,
+  RMSE = lasso_test_rmse,
+  MAE = lasso_test_mae
+)
+```
+
+The LASSO model achieved a testing MSE of 0.5919, RMSE of 0.7693, and MAE of 0.5876. These metrics measure the prediction errors when estimating logged population for observations not used during model training. The RMSE indicates that the model's predictions differ from actual logged population values by approximately 0.77 units on average, with larger errors receiving more weight. Overall, these metrics provide a baseline for comparing LASSO with the other regression models.
 
 ## Regression Tree
 
