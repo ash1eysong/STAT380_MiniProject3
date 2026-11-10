@@ -1,5 +1,5 @@
 ---
-title: "Mini Project 3 Data"
+title: "Mini Project 3"
 author: "Ian Peralta, Ashley Song, Bryan Xiao"
 format:
   html:
@@ -7,7 +7,7 @@ format:
 editor: visual
 ---
 
-This file combines the response variable, Democracy in 2020, with the 10 predictors for Mini Project 3. Five predictors are from Mini Projects 1 and 2 and five are new. Missing values are kept for now.
+This file combines the response variable, population in 2020, with the 10 predictors for Mini Project 3. Eight predictors are quantitative and two are categorical, income level and democracy. Missing values are kept for now.
 
 ## Libraries
 
@@ -25,10 +25,10 @@ library(ggplot2)
 #| message: false
 # Predictors from Mini Projects 1 and 2
 children   <- read_csv("../data/predictors/children_per_woman_total_fertility.csv")
-co2        <- read_csv("../data/predictors/co2_pcap_cons.csv")
 income     <- read_csv("../data/predictors/ilevels4_wb.csv", col_types = cols(.default = "c"))
 sanitation <- read_csv("../data/predictors/at_least_basic_sanitation_overall_access_percent.csv")
 poverty    <- read_csv("../data/predictors/number_of_people_in_poverty.csv")
+democracy  <- read_csv("../data/predictors/democracy2020.csv")
 
 # New predictors
 employment <- read_csv("../data/predictors/aged_15plus_employment_rate_percent.csv")
@@ -38,12 +38,12 @@ lifeexp    <- read_csv("../data/predictors/lex.csv")
 murder     <- read_csv("../data/predictors/murder_total_deaths.csv")
 
 # Response
-democracy  <- read_csv("../data/response/democracy2020.csv")
+population <- read_csv("../data/response/pop.csv")
 ```
 
 ## Cleaning Data
 
-Each file has one column per year. The function below drops the years after 2022 and pivots to one row per country and year.
+Each file has one column per year. The function below drops the years after 2022 and pivots to one row per country and year. Democracy only has 2020 so it gets a year column added instead.
 
 ```{r}
 #| label: drop-and-pivot
@@ -58,8 +58,8 @@ drop_and_pivot <- function(df, value_name) {
     mutate(year = as.integer(year))
 }
 
+pop_long        <- drop_and_pivot(population, "population")
 children_long   <- drop_and_pivot(children, "children_per_woman")
-co2_long        <- drop_and_pivot(co2, "co2_per_capita")
 income_long     <- drop_and_pivot(income, "income_level")
 sanitation_long <- drop_and_pivot(sanitation, "sanitation_access_pct")
 poverty_long    <- drop_and_pivot(poverty, "people_in_poverty")
@@ -68,40 +68,47 @@ energy_long     <- drop_and_pivot(energy, "energy_use_per_person")
 inflation_long  <- drop_and_pivot(inflation, "inflation_pct")
 lifeexp_long    <- drop_and_pivot(lifeexp, "life_expectancy")
 murder_long     <- drop_and_pivot(murder, "murder_deaths")
+
+democracy_long  <- democracy |>
+  mutate(year = 2020L) |>
+  select(geo, year, Democracy)
 ```
 
 ## Joining Data
 
-All predictors are joined by country and year, then filtered to 2020 and joined with Democracy. Countries with no Democracy value are dropped, and nothing else is dropped.
+Population is the response so every predictor is joined onto it by country and year, then the data is filtered to 2020. This keeps every country in the population file and leaves NA wherever a predictor is missing, so nothing gets dropped yet.
 
 ```{r}
 #| label: join
-joined <- list(
-  children_long, co2_long, income_long, sanitation_long, poverty_long,
+predictors_long <- list(
+  children_long, income_long, sanitation_long, poverty_long,
   employment_long, energy_long, inflation_long, lifeexp_long, murder_long
 ) |>
-  reduce(full_join, by = c("geo", "name", "year")) |>
-  filter(year == 2020) |>
-  arrange(geo, year)
+  map(\(df) select(df, -name))
 
-combined <- joined |>
-  inner_join(democracy, by = c("geo", "name"))
+combined <- reduce(
+  c(list(pop_long), predictors_long, list(democracy_long)),
+  left_join,
+  by = c("geo", "year")
+) |>
+  filter(year == 2020) |>
+  arrange(geo)
 ```
 
 ## Logging Variables
 
-Counts and amounts that are very right skewed are logged. These are people in poverty, murder deaths, energy use per person and CO2 per capita. Inflation is not logged because 48 countries have negative inflation in 2020, and the log of a negative number does not exist. The rest are not strongly skewed.
+Population, people in poverty, murder deaths and energy use per person are all counts or amounts with a few huge values, so we log them. Inflation is not logged because 48 countries have negative inflation in 2020 and the log of a negative number doesn't exist. The rest are not strongly skewed.
 
 ```{r}
 #| label: log-variables
 combined <- combined |>
   mutate(
-    log_people_in_poverty   = log(people_in_poverty),
-    log_murder_deaths       = log(murder_deaths),
-    log_energy_use          = log(energy_use_per_person),
-    log_co2_per_capita      = log(co2_per_capita)
+    log_pop               = log(population),
+    log_people_in_poverty = log(people_in_poverty),
+    log_murder_deaths     = log(murder_deaths),
+    log_energy_use        = log(energy_use_per_person)
   ) |>
-  select(-people_in_poverty, -murder_deaths, -energy_use_per_person, -co2_per_capita)
+  select(-population, -people_in_poverty, -murder_deaths, -energy_use_per_person)
 ```
 
 ## Checking Data
@@ -109,7 +116,7 @@ combined <- combined |>
 ```{r}
 #| label: missing-check
 dim(combined)
-table(combined$Democracy)
+table(combined$Democracy, useNA = "ifany")
 
 # Missing values per column
 colSums(is.na(combined))
@@ -124,33 +131,170 @@ write_csv(combined, "../data/combined_data.csv")
 
 ## Exploratory data analysis
 
+We read the combined data back in and use `na.omit()` so every predictor is looked at on the same countries that the models will use later.
+
+```{r}
+#| label: eda-data
+#| message: false
+combined <- read_csv("../data/combined_data.csv")
+combined <- combined |>
+  na.omit()
+```
+
 For this section graph and find statistics for each of your 5 new predictor variables vs the response. You do not need to look at the predictor variables individually, although you can if you are considering logging.
 
-## Variable 1: INSERT NAME HERE
+## Variable 1: Employment
+
+### Graph and description
+```{r}
+#| label: employment-graph
+combined |>
+  ggplot(mapping = aes(x = employment_rate_pct, y = log_pop)) +
+  geom_point() +
+  labs(title = "Employment Rate Percentage vs Logged Population",
+       x = "Employment Rate Percentage", y = "Logged Population") +
+  theme_minimal()
+```
+There does not seem to be much correlation between the employment rate percentage and population. The graph lacks a semblance of any trend or pattern. From this initial look, employment rate may not be a good predictor variable for population.
+
+### Stats and description
+```{r}
+#| label: employment-stats
+combined |>
+  group_by(percent_bins = cut(log_pop, breaks = c(12.5, 15, 17.5, 20, 22.5))) |>
+  summarise(
+    n_countries = n(),
+    mean        = mean(employment_rate_pct),
+    median      = median(employment_rate_pct),
+    sd          = sd(employment_rate_pct),
+    min         = min(employment_rate_pct),
+    q1          = quantile(employment_rate_pct, 0.25),
+    q3          = quantile(employment_rate_pct, 0.75),
+    max         = max(employment_rate_pct),
+    .groups     = "drop"
+  )
+```
+Employment rates are fairly similar across all population bins with mean ranging between 53% and 56% and median ranging between 51% and 57%. The spread of the data is moderate across all population groups with standard deviations being around 10-12%. The 15 to 17.5 group has the largest number of countries, while the 20 to 22.5 group has the smallest with only 2 countries.
+
+## Variable 2: Energy
+
+### Graph and description
+```{r}
+#| label: energy-graph
+combined |>
+  ggplot(mapping = aes(x = log_energy_use, y = log_pop)) +
+  geom_point() +
+  labs(title = "Logged Energy Use vs Logged Population",
+       x = "Logged Energy Use", y = "Logged Population") +
+  theme_minimal()
+```
+There may be a negative correlation between energy use and population. There seems to be a general trend that smaller populations will have higher energy use. With this in mind, energy use may be a good predictor variable for population.
+
+### Stats and description
+```{r}
+#| label: energy-use-stats
+combined |>
+  group_by(percent_bins = cut(log_pop, breaks = c(12.5, 15, 17.5, 20, 22.5, 25))) |>
+  summarise(
+    n_countries = n(),
+    mean        = mean(log_energy_use),
+    median      = median(log_energy_use),
+    sd          = sd(log_energy_use),
+    min         = min(log_energy_use),
+    q1          = quantile(log_energy_use, 0.25),
+    q3          = quantile(log_energy_use, 0.75),
+    max         = max(log_energy_use),
+    .groups     = "drop"
+  )
+```
+Logged energy use is fairly similar across population bins with means ranging from 7.08 to 7.49 and medians ranging from 7 to 7.29. The 12.5 to 15 population bin has the biggest mean and median, while the 17.5 to 20 bin has the smallest mean and 15 to 17.5 bin has the smallest median. The standard deviation is between 0.82 and 1 across all population bins. The 15 to 17.5 bin has the largest standard deviation, while the 12.5 to 15 population bin has the smallest standard deviation.
+
+## Variable 3: Murder
+
+### Graph and description
+
+```{r}
+#| label: murder-graph
+combined |>
+  ggplot(mapping = aes(x = log_murder_deaths, y = log_pop)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE) +
+  labs(title = "Logged Murder Deaths vs Logged Population in 2020",
+       x = "Logged Murder Deaths", y = "Logged Population") +
+  theme_minimal()
+```
+
+Logged murder deaths and logged population go up together in a pretty clear straight line, so countries with more murders tend to have more people, which makes sense since murder deaths is a total count that grows with the size of a country. The points scatter a bit around the line but there's no curve or strange gap, so murder deaths looks like a good predictor of population.
+
+### Stats and description
+
+```{r}
+#| label: murder-stats
+combined |>
+  group_by(pop_bins = cut(log_pop, breaks = c(12.5, 15, 17.5, 20, 22.5))) |>
+  summarise(
+    n_countries = n(),
+    mean        = mean(log_murder_deaths),
+    median      = median(log_murder_deaths),
+    sd          = sd(log_murder_deaths),
+    min         = min(log_murder_deaths),
+    q1          = quantile(log_murder_deaths, 0.25),
+    q3          = quantile(log_murder_deaths, 0.75),
+    max         = max(log_murder_deaths),
+    .groups     = "drop"
+  )
+```
+
+Murder deaths are skewed and the correlation with population is stronger once we log them, so we check both.
+
+```{r}
+#| label: murder-correlation
+skew <- function(x) mean((x - mean(x))^3) / sd(x)^3
+
+tibble(
+  scale       = c("Original", "Logged"),
+  skewness    = c(skew(exp(combined$log_murder_deaths)), skew(combined$log_murder_deaths)),
+  correlation = c(cor(exp(combined$log_murder_deaths), exp(combined$log_pop)),
+                  cor(combined$log_murder_deaths, combined$log_pop))
+)
+```
+
+The outlier lookup uses the fit in the graph, and a standardized residual is how many standard deviations a country sits from the line. We also look at the countries with the most and fewest murders.
+
+```{r}
+#| label: murder-outliers
+murder_fit <- lm(log_pop ~ log_murder_deaths, data = combined)
+
+murder_countries <- combined |>
+  mutate(
+    population    = exp(log_pop),
+    murder_deaths = exp(log_murder_deaths),
+    per_100k      = murder_deaths / population * 100000,
+    std_residual  = as.numeric(scale(resid(murder_fit)))
+  ) |>
+  select(name, population, murder_deaths, per_100k, std_residual)
+
+# largest standardized residuals
+murder_countries |> slice_max(abs(std_residual), n = 5)
+
+# most and fewest murders
+murder_countries |> slice_max(murder_deaths, n = 4)
+murder_countries |> slice_min(murder_deaths, n = 3)
+```
+
+The mean of logged murder deaths goes up with every population bin, from 4.13 in the smallest countries to 8.05 in the 17.5 to 20 bin, and the medians do the same thing, going from 4.31 up to 8.20. The top bin is only 2 countries, China and India, so its mean of 9.83 doesn't tell us much on its own but it keeps the same pattern. The standard deviations stay between 1.27 and 1.65 in every bin, so countries of about the same size can still have quite different numbers of murders.
+
+Murder deaths is very right skewed on the original scale with a skewness of 4.43, and after logging it's basically symmetric at 0.02. The correlation with population also goes from 0.52 to 0.79, so murder deaths needs to be logged and we already did that in the data step.
+
+China is the only extreme outlier, with a standardized residual of 3.07 since it has about 7,500 murder deaths for 1.43 billion people, which is around 0.5 per 100,000 and way fewer murders than its population predicts. Eswatini, El Salvador, Jamaica and Namibia are on the other side with murder rates between 34 and 64 per 100,000, so they have a lot more murders than other countries of their size. On the original scale the most murders are in Brazil with 55,080, India with 45,473, Mexico with 38,588 and the USA with 25,003, and the fewest are in Iceland with 2.1 and Malta with 4.5. Murder deaths is a total and not a rate, so some of this strong relationship is just population showing up on both sides, but it still makes it a strong predictor for population.
+
+## Variable 4: Inflation
 
 ### Graph and description
 
 ### Stats and description
 
-## Variable 2: INSERT NAME HERE
-
-### Graph and description
-
-### Stats and description
-
-## Variable 3: INSERT NAME HERE
-
-### Graph and description
-
-### Stats and description
-
-## Variable 4: INSERT NAME HERE
-
-### Graph and description
-
-### Stats and description
-
-## Variable 5: INSERT NAME HERE
+## Variable 5: Life expectancy
 
 ### Graph and description
 
