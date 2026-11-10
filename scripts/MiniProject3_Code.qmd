@@ -146,6 +146,7 @@ For this section graph and find statistics for each of your 5 new predictor vari
 ## Variable 1: Employment
 
 ### Graph and description
+
 ```{r}
 #| label: employment-graph
 combined |>
@@ -155,9 +156,11 @@ combined |>
        x = "Employment Rate Percentage", y = "Logged Population") +
   theme_minimal()
 ```
+
 There does not seem to be much correlation between the employment rate percentage and population. The graph lacks a semblance of any trend or pattern. From this initial look, employment rate may not be a good predictor variable for population.
 
 ### Stats and description
+
 ```{r}
 #| label: employment-stats
 combined |>
@@ -174,11 +177,13 @@ combined |>
     .groups     = "drop"
   )
 ```
+
 Employment rates are fairly similar across all population bins with mean ranging between 53% and 56% and median ranging between 51% and 57%. The spread of the data is moderate across all population groups with standard deviations being around 10-12%. The 15 to 17.5 group has the largest number of countries, while the 20 to 22.5 group has the smallest with only 2 countries.
 
 ## Variable 2: Energy
 
 ### Graph and description
+
 ```{r}
 #| label: energy-graph
 combined |>
@@ -188,9 +193,11 @@ combined |>
        x = "Logged Energy Use", y = "Logged Population") +
   theme_minimal()
 ```
+
 There may be a negative correlation between energy use and population. There seems to be a general trend that smaller populations will have higher energy use. With this in mind, energy use may be a good predictor variable for population.
 
 ### Stats and description
+
 ```{r}
 #| label: energy-use-stats
 combined |>
@@ -207,6 +214,7 @@ combined |>
     .groups     = "drop"
   )
 ```
+
 Logged energy use is fairly similar across population bins with means ranging from 7.08 to 7.49 and medians ranging from 7 to 7.29. The 12.5 to 15 population bin has the biggest mean and median, while the 17.5 to 20 bin has the smallest mean and 15 to 17.5 bin has the smallest median. The standard deviation is between 0.82 and 1 across all population bins. The 15 to 17.5 bin has the largest standard deviation, while the 12.5 to 15 population bin has the smallest standard deviation.
 
 ## Variable 3: Murder
@@ -292,21 +300,111 @@ China is the only extreme outlier, with a standardized residual of 3.07 since it
 
 ### Graph and description
 
+```{r}
+#| label: inflation-graph
+
+combined |>
+  ggplot(mapping = aes(x = inflation_pct, y = log_pop)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE) +
+  coord_cartesian(xlim = c(-20, 50)) +
+  labs(
+    title = "Inflation vs Logged Population in 2020",
+    x = "Annual Inflation (%)",
+    y = "Logged Population"
+  ) +
+  theme_minimal()
+```
+
+Most countries have relatively low inflation rates, while a small number of countries have extremely high inflation rates. A few extreme inflation outliers make the overall relationship difficult to visualize, so we removed the outliers to get a better look at the distribution. There does not appear to be a strong linear relationship between annual inflation and logged population. The points are widely scattered, and the fitted regression line is almost horizontal, suggesting little to no correlation between the two variables.
+
 ### Stats and description
 
-## Variable 5: Life expectancy
+```{r}
+#| label: inflation-stats
+
+combined |>
+  group_by(pop_bins = cut_number(log_pop, n = 4)) |>
+  summarise(
+    n_countries = n(),
+    mean        = mean(inflation_pct),
+    median      = median(inflation_pct),
+    sd          = sd(inflation_pct),
+    min         = min(inflation_pct),
+    q1          = quantile(inflation_pct, 0.25),
+    q3          = quantile(inflation_pct, 0.75),
+    max         = max(inflation_pct),
+    .groups     = "drop")
+```
+
+The median inflation rate generally increases across the population groups, ranging from approximately 1.81% in the smallest population group to 4.62% in the largest population group. However, the means vary considerably, ranging from 1.89% to 63.47%, largely due to extreme inflation outliers. The standard deviations are also very large in the second and third population groups, particularly the third group, which has a standard deviation of 333.59. The maximum inflation rate in this group is 1,890.39%, indicating substantial right skewness. Overall, inflation varies considerably within each population group, and the extreme values make the mean less representative of typical inflation rates.
+
+## Variable 5: Life Expectancy
 
 ### Graph and description
 
+```{r}
+#| label: life-expectancy-graph
+
+combined |>
+  ggplot(mapping = aes(x = life_expectancy, y = log_pop)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE) +
+  labs(
+    title = "Life Expectancy vs Logged Population in 2020",
+    x = "Life Expectancy (Years)",
+    y = "Logged Population"
+  ) +
+  theme_minimal()
+```
+
+There appears to be a weak negative linear relationship between life expectancy and logged population. The fitted regression line slopes slightly downward, suggesting that countries with higher life expectancy tend to have somewhat smaller populations. However, the points are widely scattered around the line, indicating that the relationship is not particularly strong. Overall, life expectancy may provide some information about population, but it does not appear to be a strong predictor on its own.
+
 ### Stats and description
+
+```{r}
+#| label: life-expectancy-stats
+
+combined |>
+  group_by(pop_bins = cut_number(log_pop, n = 4)) |>
+  summarise(
+    n_countries = n(),
+    mean        = mean(life_expectancy),
+    median      = median(life_expectancy),
+    sd          = sd(life_expectancy),
+    min         = min(life_expectancy),
+    q1          = quantile(life_expectancy, 0.25),
+    q3          = quantile(life_expectancy, 0.75),
+    max         = max(life_expectancy),
+    .groups     = "drop"
+  )
+```
+
+Mean life expectancy generally decreases as population increases, ranging from approximately 75.76 years in the smallest population group to 70.43 years in the third group. The medians follow a similar pattern, ranging from 76.10 to 71.75 years, before increasing slightly to 72 years in the largest population group. Standard deviations range from approximately 5.96 to 7.24 years, indicating moderate variability within each group. Overall, countries with smaller populations tend to have higher life expectancy, although there is considerable variation across all groups.
 
 ## Which variable for logging?
 
-From your exploratory data analysis, which variable will need logged/did you log already ? Why?
+Based on the exploratory data analysis, energy use per person and murder deaths required logarithmic transformations because their original distributions were right-skewed. Logging these variables helped reduce skewness and improve their distributions. Employment rate did not require logging because its distribution did not show substantial skewness. Inflation was not logged because it contains negative values, making a logarithmic transformation inappropriate. Life expectancy also did not require logging because its distribution did not show substantial skewness. Population, the response variable, was already logged during the initial data preparation.
 
 ## Logging predictor variables and splitting data
 
 Split your data into an 80/20 training testing split after logging any variables that need logged.
+
+```{r}
+#| label: logging-and-split
+
+model_data <- combined
+set.seed(321)
+data_split <- initial_split(model_data, prop = 0.80)
+
+# Create training and testing datasets
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+# Check dimensions
+dim(train_data)
+dim(test_data)
+```
 
 ## Lasso regression
 
