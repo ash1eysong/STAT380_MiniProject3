@@ -16,6 +16,18 @@ This file combines the response variable, population in 2020, with the 10 predic
 #| message: false
 library(tidyverse)
 library(ggplot2)
+library(parsnip)
+library(rsample)
+library(recipes)
+library(workflows)
+library(tune)
+library(dials)
+library(yardstick)
+library(broom)
+library(glmnet)
+library(rpart)
+library(rpart.plot)
+library(ranger)
 ```
 
 ## Loading Data
@@ -415,29 +427,65 @@ Make a lasso regression model for your response vs all predictors on the trainin
 ```{r}
 #| label: lasso-model
 
-# Define LASSO model
+# Create recipe
+lasso_recipe <- recipe(log_pop ~ ., data = train_data) |>
+  update_role(geo, name, year, new_role = "id") |>
+  step_dummy(all_nominal_predictors()) |>
+  step_normalize(all_numeric_predictors())
+
+# Define LASSO model with the penalty left to tune
 lasso_model <- linear_reg(
-  penalty = 0.1,
+  penalty = tune(),
   mixture = 1
 ) |>
   set_engine("glmnet")
-
-# Create recipe
-lasso_recipe <- recipe(log_pop ~ ., data = train_data) |>
-  update_role(geo, name, new_role = "id") |>
-  step_dummy(all_nominal_predictors()) |>
-  step_normalize(all_numeric_predictors())
 
 # Create workflow
 lasso_workflow <- workflow() |>
   add_model(lasso_model) |>
   add_recipe(lasso_recipe)
 
-# Fit model using training data
-lasso_fit <- fit(lasso_workflow, data = train_data)
+# Find the penalty with 10 fold cross validation on the training data
+set.seed(321)
+lasso_folds <- vfold_cv(train_data, v = 10)
+lasso_grid <- tibble(penalty = 10^seq(-3, 0.5, length.out = 40))
+
+set.seed(321)
+lasso_tuned <- tune_grid(
+  lasso_workflow,
+  resamples = lasso_folds,
+  grid = lasso_grid,
+  metrics = metric_set(rmse)
+)
+
+best_lasso <- select_best(lasso_tuned, metric = "rmse")
+best_lasso
+
+# Fit model using training data with the best penalty
+lasso_fit <- lasso_workflow |>
+  finalize_workflow(best_lasso) |>
+  fit(data = train_data)
 
 lasso_fit
 ```
+
+The penalty is how hard the lasso pushes slopes toward zero, so we try 40 values from 0.001 to about 3 and keep the one with the lowest cross validated RMSE.
+
+```{r}
+#| label: lasso-penalty-plot
+
+collect_metrics(lasso_tuned) |>
+  ggplot(mapping = aes(x = penalty, y = mean)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(xintercept = best_lasso$penalty, linetype = "dashed") +
+  scale_x_log10() +
+  labs(title = "Lasso Penalty vs Cross Validated RMSE",
+       x = "Penalty on Log Scale", y = "Cross Validated RMSE") +
+  theme_minimal()
+```
+
+The cross validated RMSE is lowest at a penalty of about 0.077, which is the dashed line, with an RMSE of about 0.82. It gets much worse when the penalty is tiny since the model keeps too many noisy variables, and when it's big since every slope shrinks to zero. This replaces the penalty of 0.1 that we picked by hand before.
 
 ### Which variables
 
@@ -449,7 +497,7 @@ By looking at the slopes, which variables should be considered included in the m
 # Extract coefficients
 lasso_coefs <- coef(
   extract_fit_engine(lasso_fit),
-  s = 0.1
+  s = best_lasso$penalty
 )
 
 # Display all coefficients
@@ -464,7 +512,7 @@ included_vars <- rownames(lasso_coefs)[
 setdiff(included_vars, "(Intercept)")
 ```
 
-Based on the LASSO regression coefficients, six predictors were retained in the model because their slopes were nonzero. These variables were inflation, life expectancy, logged people in poverty, logged murder deaths, logged energy use, and upper-middle-income level. The remaining predictors had coefficients of zero and were excluded from the model. LASSO therefore reduced the number of predictors by shrinking less influential coefficients to zero.
+Based on the LASSO regression coefficients at the best penalty of about 0.077, six predictors were retained in the model because their slopes were nonzero. These variables were inflation, life expectancy, logged people in poverty, logged murder deaths, logged energy use, and upper-middle-income level. The remaining predictors had coefficients of zero and were excluded from the model. LASSO therefore reduced the number of predictors by shrinking less influential coefficients to zero.
 
 ### Model evaluation-regression metrics on testing.
 
@@ -497,7 +545,7 @@ tibble(
 )
 ```
 
-The LASSO model achieved a testing MSE of 0.5919, RMSE of 0.7693, and MAE of 0.5876. These metrics measure the prediction errors when estimating logged population for observations not used during model training. The RMSE indicates that the model's predictions differ from actual logged population values by approximately 0.77 units on average, with larger errors receiving more weight. Overall, these metrics provide a baseline for comparing LASSO with the other regression models.
+The LASSO model achieved a testing MSE of 0.5299, RMSE of 0.7279, and MAE of 0.5616. These metrics measure the prediction errors when estimating logged population for observations not used during model training. The RMSE indicates that the model's predictions differ from actual logged population values by approximately 0.73 units on average, with larger errors receiving more weight. Overall, these metrics provide a baseline for comparing LASSO with the other regression models.
 
 ## Regression Tree
 
@@ -507,7 +555,8 @@ The LASSO model achieved a testing MSE of 0.5919, RMSE of 0.7693, and MAE of 0.5
 #| label: regression-tree
 
 set.seed(321)
-population_recipe=recipe(log_pop~., data=train_data)
+population_recipe=recipe(log_pop~., data=train_data) |>
+  update_role(geo, name, year, new_role = "id")
 tree_spec <- decision_tree() |>
   set_mode("regression")|>
   set_engine("rpart", model=TRUE) 
@@ -534,18 +583,20 @@ From looking at the plot, we can see that Murder Deaths, Sanitation Access Perce
 ```{r}
 #| label: regression-tree-metrics
 
-population_tree_predict <- 
-  tree_workflow |> 
-  fit(data = test_data)
-
-test_results <- augment(population_tree_predict, new_data = test_data) ## adding original data
 regression_metrics <- metric_set(mse, rmse, mae)
 
-test_results|>
+# predictions from the tree fit on the training data
+test_results <- augment(population_tree, new_data = test_data) ## adding original data
+train_results <- augment(population_tree, new_data = train_data)
+
+test_results |>
+  regression_metrics(truth = log_pop, estimate = .pred)
+
+train_results |>
   regression_metrics(truth = log_pop, estimate = .pred)
 ```
 
-The Regression Decision Tree model achieved a testing MSE of 1.29, RMSE of 1.13, and MAE of 0.79. These metrics measure the prediction errors when estimating logged population for observations in the testing set. We can use these metrics to compare against the performance of other regression models.
+The Regression Decision Tree model achieved a testing MSE of 0.85, RMSE of 0.92, and MAE of 0.70. These metrics measure the prediction errors when estimating logged population for observations in the testing set. The training RMSE is 0.73 and the testing RMSE is 0.92, so the tree fits the countries it was trained on better than new ones, which is some overfitting. We can use these metrics to compare against the performance of other regression models.
 
 ## Random forest
 
@@ -553,20 +604,219 @@ The Regression Decision Tree model achieved a testing MSE of 1.29, RMSE of 1.13,
 
 Make a random forest model for your response vs all predictors on the training data.
 
+A random forest has settings we can't know ahead of time, so we tune the number of variables tried at each split, `mtry`, and the smallest node size, `min_n`, with 10 fold cross validation on the training data. We use 500 trees and try 15 combinations, then pick the one with the lowest cross validated RMSE.
+
+```{r}
+#| label: rf-tuning
+
+rf_recipe <- recipe(log_pop ~ ., data = train_data) |>
+  update_role(geo, name, year, new_role = "id") |>
+  step_string2factor(all_nominal_predictors())
+
+rf_tune_spec <- rand_forest(mtry = tune(), min_n = tune(), trees = 500) |>
+  set_engine("ranger") |>
+  set_mode("regression")
+
+rf_tune_workflow <- workflow() |>
+  add_recipe(rf_recipe) |>
+  add_model(rf_tune_spec)
+
+set.seed(321)
+rf_folds <- vfold_cv(train_data, v = 10)
+rf_grid <- expand_grid(mtry = c(2, 4, 6, 8, 10), min_n = c(2, 5, 10))
+
+set.seed(321)
+rf_tuned <- tune_grid(
+  rf_tune_workflow,
+  resamples = rf_folds,
+  grid = rf_grid,
+  metrics = metric_set(rmse)
+)
+
+show_best(rf_tuned, metric = "rmse", n = 5)
+best_rf <- select_best(rf_tuned, metric = "rmse")
+best_rf
+```
+
+The best settings are `mtry` = 8 and `min_n` = 2 with a cross validated RMSE of about 0.88, but the next few combinations are almost the same so the settings don't matter much here. We refit that forest on all of the training data and turn on permutation importance, which measures how much the error goes up when a variable is shuffled.
+
+```{r}
+#| label: rf-model
+
+rf_final_spec <- rand_forest(mtry = best_rf$mtry, min_n = best_rf$min_n, trees = 500) |>
+  set_engine("ranger", importance = "permutation") |>
+  set_mode("regression")
+
+set.seed(321)
+rf_fit <- workflow() |>
+  add_recipe(rf_recipe) |>
+  add_model(rf_final_spec) |>
+  fit(data = train_data)
+```
+
 ### Which variables
 
 By looking at the variable importance plot, which variables should be considered included in the model
 
+```{r}
+#| label: rf-importance
+
+rf_importance <- tibble(
+  variable   = names(extract_fit_engine(rf_fit)$variable.importance),
+  importance = extract_fit_engine(rf_fit)$variable.importance
+)
+
+rf_importance |>
+  ggplot(mapping = aes(x = importance, y = reorder(variable, importance))) +
+  geom_col() +
+  labs(title = "Random Forest Variable Importance for Logged Population",
+       x = "Increase in MSE After Shuffling", y = "Variable") +
+  theme_minimal()
+```
+
+Logged murder deaths is by far the most important variable, with an increase in MSE of about 2.65 when it's shuffled, and logged people in poverty is a clear second at about 0.61. Logged energy use and children per woman are a distant third and fourth at about 0.19 and 0.15, and everything else is below 0.1, with employment rate slightly negative which means shuffling it didn't hurt the predictions at all. We would include murder deaths and people in poverty for sure, and energy use and children per woman are borderline.
+
 ### Model evaluation-regression metrics on testing.
+
+```{r}
+#| label: rf-metrics
+
+rf_metrics <- metric_set(mse, rmse, mae)
+
+rf_test_metrics <- augment(rf_fit, new_data = test_data) |>
+  rf_metrics(truth = log_pop, estimate = .pred)
+
+rf_train_metrics <- augment(rf_fit, new_data = train_data) |>
+  rf_metrics(truth = log_pop, estimate = .pred)
+
+# training and testing side by side
+bind_rows(Training = rf_train_metrics, Testing = rf_test_metrics, .id = "data") |>
+  select(data, .metric, .estimate) |>
+  pivot_wider(names_from = .metric, values_from = .estimate)
+
+# out of bag error, which uses rows each tree did not see
+rf_oob_mse <- extract_fit_engine(rf_fit)$prediction.error
+tibble(oob_mse = rf_oob_mse, oob_rmse = sqrt(rf_oob_mse))
+```
+
+The random forest achieved a testing MSE of 0.64, RMSE of 0.80, and MAE of 0.55. The training RMSE of 0.34 is way lower, but that's expected for a forest since every tree was trained on most of the training rows, so we don't use it to check overfitting. The out of bag RMSE is 0.89 and the cross validated RMSE is 0.88, which are both a little higher than the testing RMSE, so the testing result isn't too good to be true and the model generalizes about as well as those two estimates say. The testing set is only 27 countries so these numbers move around a bit.
 
 ## Variable slection comparison
 
 What were the similarities and the difference between the variables selected for each model.
 
+For the lasso we count any variable with a slope that isn't zero, for the tree any variable that shows up in a split, and for the forest we show the importance from the plot.
+
+```{r}
+#| label: variable-comparison
+
+# lasso, with the dummy columns matched back to the original variable
+lasso_slopes <- as.matrix(coef(extract_fit_engine(lasso_fit), s = best_lasso$penalty))
+lasso_selected <- rownames(lasso_slopes)[lasso_slopes[, 1] != 0] |>
+  str_replace("^income_level_.*", "income_level") |>
+  str_replace("^Democracy_.*", "Democracy") |>
+  unique()
+
+# tree, every variable used in a split
+tree_selected <- unique(as.character(tree_object$frame$var))
+tree_selected <- tree_selected[tree_selected != "<leaf>"]
+
+rf_importance |>
+  arrange(desc(importance)) |>
+  mutate(
+    lasso = if_else(variable %in% lasso_selected, "Yes", "No"),
+    tree  = if_else(variable %in% tree_selected, "Yes", "No")
+  ) |>
+  select(variable, lasso, tree, forest_importance = importance) |>
+  knitr::kable(digits = 3, caption = "Which variables each model selected")
+```
+
+All three models pick logged murder deaths as the main variable, since it has by far the biggest slope in the lasso, it's the first split in the tree, and it's the top bar in the forest. Logged people in poverty and logged energy use are also in all three, and life expectancy is in the lasso and the tree but the forest only gives it an importance of 0.09. The differences are that the lasso is the only one that keeps inflation and the upper middle income level, which have almost no importance in the forest, that the tree is the only one that uses sanitation access, and that the forest is the only one that gives children per woman any real importance at 0.15, so it's the one variable the lasso and the tree both skip that the forest likes. Employment rate is left out by all three, which fits what we saw in the exploratory analysis where it had no relationship with population.
+
 ## Best model
 
 Which model would you reccomend your team use? Why? Are there tradeoff between interpretability and model metrics?
 
+```{r}
+#| label: model-comparison
+
+# one row per model, testing metrics on the same 27 countries
+wide_metrics <- function(m, name) {
+  m |>
+    select(.metric, .estimate) |>
+    pivot_wider(names_from = .metric, values_from = .estimate) |>
+    mutate(model = name, .before = 1)
+}
+
+bind_rows(
+  tibble(model = "Lasso", mse = lasso_test_mse, rmse = lasso_test_rmse, mae = lasso_test_mae),
+  wide_metrics(test_results |> regression_metrics(truth = log_pop, estimate = .pred), "Regression tree"),
+  wide_metrics(rf_test_metrics, "Random forest")
+) |>
+  knitr::kable(digits = 3, caption = "Testing metrics for each model")
+```
+
+We would recommend the lasso model. It has the lowest MSE and RMSE on the testing set at 0.53 and 0.73, ahead of the random forest at 0.64 and 0.80 and the regression tree at 0.85 and 0.92, and the random forest only edges it out on MAE with 0.55 against 0.56. The lasso penalty was found with cross validation so the comparison is fair, and the lasso is a short equation that we can read and explain while the forest is a black box, so there's no reason to give up the lasso for a model that isn't better. The tradeoff is that the forest can pick up curves and interactions that the lasso can't, but here that didn't show up as lower error on the testing countries. The tree is the easiest to explain but it has the worst error on every metric and it overfits, with a training RMSE of 0.73 against a testing RMSE of 0.92. All three models agree that logged murder deaths is the most important predictor of logged population, and the testing set is only 27 countries so the gap between the lasso and the forest could change with a different split.
+
 ## Your question
 
 You will write your own question about the data, create a data visualization that can help answer your question, and write an answer to your question. The question/visualization should explore the relationship between at least 2 of the variables in the dataset. Be sure you include both the question and the answer to your question based on the visualization you have created. It should be a different question than last two mini-projects.
+
+Do democracies really have lower murder rates than other countries, or is that just because democracies tend to be richer?
+
+Murder deaths is a total so it mostly depends on how big a country is, which means we turn it into a murder rate per 100,000 people using the population. The graph splits the countries by income level, with each dot a country and the black line the median.
+
+```{r}
+#| label: question-graph
+
+income_order <- c("Low income", "Lower middle income", "Upper middle income", "High income")
+
+rate_data <- combined |>
+  mutate(
+    murder_per_100k = exp(log_murder_deaths - log_pop) * 100000,
+    income_level    = factor(income_level, levels = income_order)
+  )
+
+rate_medians <- rate_data |>
+  group_by(income_level, Democracy) |>
+  summarise(median = median(murder_per_100k), .groups = "drop")
+
+rate_data |>
+  ggplot(mapping = aes(x = Democracy, y = murder_per_100k, color = Democracy)) +
+  geom_jitter(width = 0.15, alpha = 0.6) +
+  geom_crossbar(
+    data = rate_medians,
+    mapping = aes(x = Democracy, y = median, ymin = median, ymax = median),
+    width = 0.6, color = "black", inherit.aes = FALSE
+  ) +
+  scale_y_log10() +
+  facet_wrap(~ income_level, nrow = 1, labeller = label_wrap_gen(width = 12)) +
+  labs(title = "Murder Rate by Democracy and Income Level in 2020",
+       x = "Democracy", y = "Murder Deaths per 100,000 People on Log Scale") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r}
+#| label: question-stats
+
+rate_data |>
+  group_by(Democracy) |>
+  summarise(
+    n_countries = n(),
+    median      = median(murder_per_100k),
+    q1          = quantile(murder_per_100k, 0.25),
+    q3          = quantile(murder_per_100k, 0.75),
+    .groups     = "drop"
+  )
+
+rate_data |>
+  group_by(income_level, Democracy) |>
+  summarise(n_countries = n(), median = median(murder_per_100k), .groups = "drop")
+
+# share of countries that aren't democracies with a rate above the median democracy
+democracy_median <- median(rate_data$murder_per_100k[rate_data$Democracy == "Yes"])
+mean(rate_data$murder_per_100k[rate_data$Democracy == "No"] > democracy_median)
+```
+
+Overall democracies do have lower murder rates, with a median of 1.66 deaths per 100,000 people against 5.02 for countries that aren't democracies, and about 85% of the countries that aren't democracies are above the median democracy. Most of that gap goes away once we split by income level though. Almost all of the high income countries are democracies, 37 out of 41, and their median is about 1.06 either way, with 1.06 for the democracies against 1.10 for the 4 that aren't. In the upper middle income group the democracies actually have the higher median, 10.7 against 2.94, and in the lower middle income group they're lower, 3.24 against 5.98, but there are only 7 democracies there, and there are no low income democracies at all. So democracy on its own doesn't explain murder rates much, and most of the gap in the first numbers comes from democracies being richer, since income level separates the countries better with a median of 1.06 for high income against 7.93 for low income.
