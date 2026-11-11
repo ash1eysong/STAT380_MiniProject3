@@ -503,13 +503,49 @@ The LASSO model achieved a testing MSE of 0.5919, RMSE of 0.7693, and MAE of 0.5
 
 ### Making model
 
-Make a regression tree model for your response vs all predictors on the training data.
+```{r}
+#| label: regression-tree
+
+set.seed(321)
+population_recipe=recipe(log_pop~., data=train_data)
+tree_spec <- decision_tree() |>
+  set_mode("regression")|>
+  set_engine("rpart", model=TRUE) 
+
+tree_workflow <- workflow() |>
+  add_recipe(population_recipe) |>
+  add_model(tree_spec)
+
+population_tree=tree_workflow |>
+  fit(data = train_data)
+
+tree_object=population_tree |>
+  extract_fit_engine() 
+
+rpart.plot(tree_object)
+```
 
 ### Which variables
 
-By looking at the tree, which variables should be considered included in the model
+From looking at the plot, we can see that Murder Deaths, Sanitation Access Percent, Energy Use, People in Poverty, and Life Expectancy should be considered when making our model.
 
 ### Model evaluation-regression metrics on testing.
+
+```{r}
+#| label: regression-tree-metrics
+
+population_tree_predict <- 
+  tree_workflow |> 
+  fit(data = test_data)
+
+test_results <- augment(population_tree_predict, new_data = test_data) ## adding original data
+regression_metrics <- metric_set(mse, rmse, mae)
+
+test_results|>
+  regression_metrics(truth = log_pop, estimate = .pred)
+```
+
+The Regression Decision Tree model achieved a testing MSE of 1.29, RMSE of 1.13, and MAE of 0.79. These metrics measure the prediction errors when estimating logged population for observations in the testing set. We can use these metrics to compare against the performance of other regression models.
 
 ## Random forest
 
